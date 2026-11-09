@@ -38,10 +38,16 @@ doc.active_layer = layer              # select it
 doc.layers, folder.children, layer.parent, layer.is_folder   # the layer tree, top to bottom
 with doc.undo_group("My script"):      # everything inside is one undo step (csp.undo_group: active canvas)
     ...
+layer.duplicate(), layer.merge_down(), layer.remove(), layer.move("up")   # top/up/down/bottom
+doc.name, doc.width, doc.height, doc.resolution, doc.modified   # "Illustration", 1600, 1200, 72.0, True
+layer.is_text, layer.text                 # text layers, read-only (None for other layers)
+doc.find("ink"), doc.walk()           # first layer by name; every layer, depth first
+doc.flatten(), doc.merge_visible(), doc.save(), doc.select_all(), doc.deselect(), doc.invert_selection()
 csp.run("Layer/Duplicate Layer")      # any main-menu command, like clicking it (dialogs wait until closed)
 csp.enabled("Edit/Undo")              # greyed out or not
 csp.commands()                        # {"Edit/Undo": (command id, param), ...}
 ```
+These menu-backed methods select the layer first and only work on the active canvas (else `CspError`).
 `csp.current_layer()`, `csp.new_raster_layer()` and `csp.new_folder()` are shortcuts for the active canvas.
 Failures raise `csp.CspError`; calling `csp` off CSP's UI thread raises it too.
 

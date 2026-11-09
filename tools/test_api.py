@@ -90,6 +90,39 @@ assert doc.layers == before_layers, doc.layers
 with doc.undo_group():  # empty: records nothing
     pass
 
+# document info
+for d in docs:
+    assert d.name and isinstance(d.width, int) and d.width > 0 and d.height > 0 and d.resolution > 0, d
+    assert d.modified in (True, False)
+if not any(layer.is_text for layer in doc.walk()):  # rotating asks to rasterize text (and 3D) layers
+    w, h = doc.width, doc.height
+    csp.run("Edit/Rotate/Flip canvas/Rotate by 90 Degrees Clockwise")
+    assert (doc.width, doc.height) == (h, w) and doc.modified
+    csp.run("Edit/Undo")
+    assert (doc.width, doc.height) == (w, h)
+
+# text layers (read-only)
+for layer in doc.walk():
+    assert layer.is_text == (layer.text is not None), layer
+
+# menu-backed layer / document methods, all in one undo step
+with doc.undo_group("cspy menu methods"):
+    a = doc.new_raster_layer("cspy m1")
+    b = a.duplicate()
+    assert b != a and doc.active_layer == b and doc.find("cspy m1") in (a, b) and doc.find("cspy none") is None
+    top = doc.layers
+    b.move("down")
+    assert doc.layers.index(b) == top.index(b) + 1, doc.layers
+    b.move("up")
+    assert doc.layers == top, doc.layers
+    m = doc.new_raster_layer("cspy m2").merge_down()
+    m.remove()
+    assert m not in doc.layers
+    doc.select_all(); doc.invert_selection(); doc.select_all(); doc.deselect()
+    assert len(list(doc.walk())) >= len(doc.layers)
+csp.run("Edit/Undo")
+assert doc.layers == before_layers, doc.layers
+
 try:
     csp.Layer(0x10, doc).name
 except CspError:

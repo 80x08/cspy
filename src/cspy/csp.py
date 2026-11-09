@@ -10,7 +10,7 @@ Raw memory helpers (read, va, rtti_name, ...) live in mem.py.
 import contextlib
 import ctypes
 import sys
-from ctypes import c_int32, c_uint32, c_uint64, c_void_p
+from ctypes import c_double, c_int32, c_uint32, c_uint64, c_void_p
 
 import mem
 from mem import read_u64 as _u64, va as _va
@@ -165,6 +165,91 @@ class Document:
         _history_record(hist, ctypes.addressof(multi))  # records without running it again (consumes multi)
         _history_notify(self.ptr, 1, 1, ctypes.addressof(note))  # history palette / menus (consumes note)
 
+    def _canvas(self):
+        self._sp()  # raises once the document is closed
+        return _u64(_u64(self.ptr + 0x100) + 0xA0)  # PWClipProject -> PWCanvas
+
+    @property
+    def width(self):
+        """Canvas width in pixels."""
+        return round(c_double.from_address(self._canvas() + 0xC8).value)
+
+    @property
+    def height(self):
+        return round(c_double.from_address(self._canvas() + 0xD8).value)
+
+    @property
+    def resolution(self):
+        """Dots per inch."""
+        return c_double.from_address(self._canvas() + 0xE8).value
+
+    def _tab(self):
+        # shortcut: tabs are matched to documents by position (both in tab order); find a direct link if
+        # tab dragging or split canvas windows ever break that.
+        docs = [ptr for ptr, _ in mem.sp_vector(_app() + 0x300)]
+        views = mem.sp_vector(_app() + 0x748)  # the canvases' PWScrollViews
+        container = _u64(views[0][0] + 0x28) if views else None
+        bar = _u64(container + 0x280) if container else None
+        if not bar or mem.rtti_name(bar) != ".?AVPWWorkTabBar@Planeswalker@@":
+            raise CspError("canvas tab bar not found")
+        tabs = [ptr for ptr, _ in mem.sp_vector(bar + 0x278)]
+        if self.ptr not in docs:
+            raise CspError("document is closed")
+        if len(tabs) != len(docs):
+            raise CspError("canvas tabs don't line up with the open documents")
+        return tabs[docs.index(self.ptr)]
+
+    @property
+    def name(self):
+        """The name on the canvas tab (file name without extension, or e.g. "Illustration" if never saved)."""
+        return _pws_read(self._tab() + 0x250)
+
+    @property
+    def modified(self):
+        """Unsaved changes (the tab shows a *)."""
+        tab = self._tab()
+        return _pws_read(tab + 0x300) == _pws_read(tab + 0x250) + "*"
+
+    def _run(self, command):
+        """Run a menu command on this canvas (menu commands act on the active one), return the active layer."""
+        if active_document() != self:
+            raise CspError(f"{self!r} is not the active canvas")
+        run(command)
+        return self.active_layer
+
+    def walk(self):
+        """Every layer and folder, depth first, top to bottom like the Layer palette."""
+        stack = self.layers[::-1]
+        while stack:
+            layer = stack.pop()
+            yield layer
+            stack.extend(layer.children[::-1])
+
+    def find(self, name):
+        """The first layer or folder named `name` (anywhere in the tree), or None."""
+        return next((layer for layer in self.walk() if layer.name == name), None)
+
+    def flatten(self):
+        """Layer > Flatten image. Returns the resulting layer."""
+        return self._run("Layer/Flatten image")
+
+    def merge_visible(self):
+        """Layer > Merge visible layers. Returns the resulting layer."""
+        return self._run("Layer/Merge visible layers")
+
+    def save(self):
+        """File > Save (a never-saved canvas opens the Save dialog)."""
+        self._run("File/Save")
+
+    def select_all(self):
+        self._run("Select/Select All")
+
+    def deselect(self):
+        self._run("Select/Deselect")
+
+    def invert_selection(self):
+        self._run("Select/Invert selected area")
+
     def new_raster_layer(self, name=None):
         """Same as Layer > New Raster Layer (undoable). Returns the new layer."""
         return self._create(_new_raster_layer, name)
@@ -232,6 +317,11 @@ _set_blend_mode = _fn(0x140458390, None, c_void_p, c_int32)  # selected: (doc, m
 _set_locked = _fn(0x1404562B0, None, c_void_p, c_int32, c_int32)  # selected: (doc, set (0=toggle), on)
 _set_lock_alpha = _fn(0x140452BC0, None, c_void_p, c_int32, c_int32)  # same shape
 _set_clip = _fn(0x140452D90, None, c_void_p, c_int32, c_int32)  # same shape
+# text layers: layer attachment 200 is a PWTextLayerManager holding one or more text blocks
+_TEXT = 200
+_get_attachment = _fn(0x141A23F60, c_int32, c_void_p, c_int32, c_void_p)  # (layer, key, sp* out) -> found
+_text_count = _fn(0x1402312D0, c_int32, c_void_p)  # (mgr) -> blocks
+_text_data = _fn(0x141AEC7A0, c_void_p, c_void_p, c_void_p, c_int32)  # (mgr, sp<PWData>* out, block): UTF-8
 
 
 class Layer:
@@ -330,6 +420,34 @@ class Layer:
         self._toggle(self.clip, on, _set_clip, 0, 0)
 
     @property
+    def is_text(self):
+        mgr = (c_uint64 * 2)()
+        found = _get_attachment(self._live(), _TEXT, ctypes.addressof(mgr))
+        _sp_release(ctypes.addressof(mgr))
+        return bool(found)
+
+    @property
+    def text(self):
+        """A text layer's text (several text blocks are joined with newlines), or None for other layers.
+        Read-only: CSP doesn't redraw text written from outside the text tool."""
+        mgr = (c_uint64 * 2)()
+        if not _get_attachment(self._live(), _TEXT, ctypes.addressof(mgr)):
+            return None
+        try:
+            blocks = []
+            for i in range(_text_count(mgr[0])):
+                data = (c_uint64 * 2)()
+                _text_data(mgr[0], ctypes.addressof(data), i)  # PWData: +8 bytes, +0x18 length
+                try:
+                    n = c_int32.from_address(data[0] + 0x18).value if data[0] else 0
+                    blocks.append(mem.read(_u64(data[0] + 8), n).decode("utf-8") if n > 0 else "")
+                finally:
+                    _sp_release(ctypes.addressof(data))
+            return "\n".join(blocks)
+        finally:
+            _sp_release(ctypes.addressof(mgr))
+
+    @property
     def is_folder(self):
         return bool(self._int(0x1BC) & 1)
 
@@ -358,6 +476,31 @@ class Layer:
             _set_layer_name(self._live(), ctypes.addressof(s))
         finally:
             _pws_free(ctypes.addressof(s))
+
+    def _run(self, command):
+        """Select this layer (only it) and run a Layer-menu command on it. Returns the active layer afterwards."""
+        self.document.active_layer = self
+        return self.document._run(command)
+
+    def duplicate(self):
+        """Layer > Duplicate Layer. Returns the copy (selected, above this one)."""
+        return self._run("Layer/Duplicate Layer")
+
+    def remove(self):
+        """Layer > Delete Layer. The layer below (or above) becomes selected."""
+        self._run("Layer/Delete Layer")
+
+    def merge_down(self):
+        """Layer > Merge with layer below. Returns the merged layer."""
+        return self._run("Layer/Merge with layer below")
+
+    _ORDER = {"top": "Top", "up": "Up", "down": "Down", "bottom": "Bottom"}
+
+    def move(self, where):
+        """Layer > Layer Order: "top", "up", "down" or "bottom" (within its folder, as CSP does)."""
+        if where not in self._ORDER:
+            raise CspError(f"move() takes one of {list(self._ORDER)}, not {where!r}")
+        self._run("Layer/Layer Order/" + self._ORDER[where])
 
     def __eq__(self, other):
         return isinstance(other, Layer) and other.ptr == self.ptr
