@@ -173,21 +173,28 @@ def _serve():
     while True:
         conn, _ = srv.accept()
         with conn:
-            data = b""
-            while not data.endswith(b"\0"):
-                chunk = conn.recv(65536)
-                if not chunk:
-                    break
-                data += chunk
-            code = data.rstrip(b"\0").decode()
             try:
-                if code.startswith("!"):  # run on this console thread: for diagnostics, never touch CSP objects
-                    reply = _exec(code[1:])
-                else:
-                    reply = on_main(lambda: _exec(code))
-            except BaseException:
-                reply = traceback.format_exc()
-            conn.sendall(reply.encode() + b"\0")
+                _handle(conn)
+            except OSError:
+                pass  # the client went away (killed, timed out): keep serving
+
+
+def _handle(conn):
+    data = b""
+    while not data.endswith(b"\0"):
+        chunk = conn.recv(65536)
+        if not chunk:
+            break
+        data += chunk
+    code = data.rstrip(b"\0").decode()
+    try:
+        if code.startswith("!"):  # run on this console thread: for diagnostics, never touch CSP objects
+            reply = _exec(code[1:])
+        else:
+            reply = on_main(lambda: _exec(code))
+    except BaseException:
+        reply = traceback.format_exc()
+    conn.sendall(reply.encode() + b"\0")
 
 
 class _NoMenu:

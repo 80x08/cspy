@@ -2,7 +2,8 @@
 doc = csp.active_document()
 with doc.undo_group("cspy: make stack"):
     folder = doc.new_folder("cspy stack")
-    for name, opacity, blend in (("base", 100, 0), ("shade (Multiply)", 60, 2), ("light (Screen)", 35, 8)):
+    for name, opacity, blend in (("base", 100, csp.BlendMode.NORMAL), ("shade (Multiply)", 60, csp.BlendMode.MULTIPLY),
+                                  ("light (Screen)", 35, csp.BlendMode.SCREEN)):
         layer = doc.new_raster_layer(name)  # lands inside the selected folder
         layer.opacity = opacity
         layer.blend_mode = blend

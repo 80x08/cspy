@@ -48,7 +48,7 @@ for prop in ("visible", "locked", "lock_transparency", "clip"):
     assert getattr(layer, prop) == want, prop
     setattr(layer, prop, not want)
     assert getattr(layer, prop) == (not want), prop
-layer.opacity, layer.blend_mode = 40, 2
+layer.opacity, layer.blend_mode = 40, csp.BlendMode.MULTIPLY
 assert (layer.opacity, layer.blend_mode) == (40, 2)
 assert doc.active_layer == start, "setters must restore the selection"
 csp.run("Edit/Undo")  # the blend mode
@@ -122,6 +122,71 @@ with doc.undo_group("cspy menu methods"):
     assert len(list(doc.walk())) >= len(doc.layers)
 csp.run("Edit/Undo")
 assert doc.layers == before_layers, doc.layers
+
+# vector layers, named blend modes, history (undo by how much the history grew: CSP merges repeated changes)
+h0 = doc.history
+v = doc.new_vector_layer("cspy vec")
+assert v.name == "cspy vec" and not v.is_text and v.blend_mode == csp.BlendMode.NORMAL
+assert len(doc.history) == len(h0) + 1
+v.blend_mode = csp.BlendMode.DIVIDE
+assert v.blend_mode is csp.BlendMode.DIVIDE
+try:
+    v.blend_mode = 37
+except CspError:
+    pass
+else:
+    raise AssertionError("blend mode 37 accepted")
+doc.undo(len(doc.history) - len(h0))
+assert doc.history == h0 and doc.layers == before_layers, doc.history
+
+# drawing colors, rectangle selection, fill (colors are put back at the end)
+main0, sub0 = csp.main_color(), csp.sub_color()
+try:
+    csp.set_sub_color((1, 2, 3))
+    csp.set_main_color((250, 10, 10))
+    assert (csp.main_color(), csp.sub_color()) == ((250, 10, 10), (1, 2, 3))
+    for bad in ((1, 2), (1, 2, 300), (1.5, 2, 3)):
+        try:
+            csp.set_main_color(bad)
+        except CspError:
+            pass
+        else:
+            raise AssertionError(f"color {bad!r} accepted")
+    h0 = doc.history
+    doc.new_raster_layer("cspy fill")
+    doc.select_rect(10, 10, 60, 40)
+    assert csp.enabled("Select/Deselect")
+    doc.fill()
+    doc.fill((0, 200, 0))
+    assert csp.main_color() == (250, 10, 10), "fill(rgb) must put the main color back"
+    assert doc.history[len(h0):] == ["New Raster Layer", "Select rectangle", "Fill", "Fill"], doc.history
+    try:
+        doc.select_rect(5, 5, 5, 9)
+    except CspError:
+        pass
+    else:
+        raise AssertionError("empty rectangle accepted")
+    doc.undo(len(doc.history) - len(h0))
+    assert doc.history == h0 and doc.layers == before_layers and not csp.enabled("Select/Deselect")
+finally:
+    csp.set_main_color(main0)
+    csp.set_sub_color(sub0)
+
+# export without dialogs (into the temp folder; the file is removed again)
+import os, struct, tempfile
+out = os.path.join(tempfile.gettempdir(), "cspy_test_export.png")
+doc.export(out)
+with open(out, "rb") as f:
+    head = f.read(24)
+os.remove(out)
+assert head[:8] == b"\x89PNG\r\n\x1a\n" and struct.unpack(">II", head[16:24]) == (doc.width, doc.height), head
+for bad in ("x.gif", os.path.join(tempfile.gettempdir(), "no such folder", "x.png")):
+    try:
+        doc.export(bad)
+    except CspError:
+        pass
+    else:
+        raise AssertionError(f"export to {bad!r} accepted")
 
 try:
     csp.Layer(0x10, doc).name

@@ -9,6 +9,8 @@ Raw memory helpers (read, va, rtti_name, ...) live in mem.py.
 """
 import contextlib
 import ctypes
+import enum
+import os
 import sys
 from ctypes import c_double, c_int32, c_uint32, c_uint64, c_void_p
 
@@ -244,6 +246,78 @@ class Document:
     def select_all(self):
         self._run("Select/Select All")
 
+    def select_rect(self, left, top, right, bottom):
+        """Replace the selection with this rectangle (canvas pixels; right/bottom exclusive). One undo step."""
+        if not (left < right and top < bottom):
+            raise CspError(f"empty rectangle {(left, top, right, bottom)}")
+        if active_document() != self:
+            raise CspError(f"{self!r} is not the active canvas")
+        _call_virtual(self.ptr, 0x48)  # what Select All does first (ends whatever the canvas was doing)
+        area = (c_uint64 * 2)()
+        doc = self._sp()
+        _select_area(ctypes.addressof(area), ctypes.addressof(doc))
+        try:
+            # Select All's recipe (140481da0 -> 140510000 -> 141aa5ff0) with our rectangle.
+            cmd, snap = (c_uint64 * 2)(), (c_uint64 * 2)(area[0], area[1])
+            _addref(area[1])
+            _select_cmd(ctypes.addressof(cmd), ctypes.addressof(snap), 0)  # undo snapshot of the selection
+            label = _pws_new("Select rectangle")
+            try:
+                _cmd_set_label(cmd[0], ctypes.addressof(label))
+            finally:
+                _pws_free(ctypes.addressof(label))
+            _area_reset(area[0], self.width, self.height, 1)  # empty mask, canvas sized
+            mask = (c_uint64 * 2)()
+            _get_raster(_u64(area[0] + 8), ctypes.addressof(mask))
+            try:
+                bounds = (c_int32 * 4).from_address(area[0] + 0x18)
+                bounds[:] = [left, top, right, bottom]
+                value = ctypes.create_string_buffer(8)
+                _value_init(value)
+                _value_set(value, 0xFF, 0xFF)
+                _fill_rect(mask[0], ctypes.addressof(bounds), value, 0)  # clipped to the canvas
+                c_int32.from_address(area[0] + 0x28).value = 2  # "has a selection", as Select All sets
+            finally:
+                _sp_release(ctypes.addressof(mask))
+            _push(self.ptr, ctypes.addressof(cmd))
+        finally:
+            _sp_release(ctypes.addressof(area))
+        for refresh in (_selection_changed, _selection_changed2):
+            doc = self._sp()
+            refresh(ctypes.addressof(doc))
+
+    def export(self, path):
+        """File > Export (Single Layer) to `path` without any dialog. The format comes from the extension
+        (.png .jpg .bmp .tif .tga .psd .psb); CSP uses the last export settings for that format, without the
+        preview. An existing file is overwritten."""
+        path = os.path.abspath(path)
+        item = _EXPORT_MENU.get(os.path.splitext(path)[1].lower())
+        if not item:
+            raise CspError(f"can't export to {path!r}: use one of {sorted(_EXPORT_MENU)}")
+        if not os.path.isdir(os.path.dirname(path)):
+            raise CspError(f"folder {os.path.dirname(path)!r} doesn't exist")
+        before = os.stat(path).st_mtime_ns if os.path.exists(path) else None
+        hooks = _export_hooks()
+        hooks["path"] = path
+        try:
+            self._run("File/Export (Single Layer)/" + item)
+        finally:
+            hooks["path"] = None
+        if not os.path.exists(path) or os.stat(path).st_mtime_ns == before:
+            raise CspError(f"CSP did not write {path!r}")
+
+    def fill(self, rgb=None):
+        """Edit > Fill: fill the selection (whole layer without one) on the current layer with the main
+        color, or with `rgb` (the main color is put back afterwards)."""
+        if rgb is None:
+            return self._run("Edit/Fill")
+        old = main_color()
+        set_main_color(rgb)
+        try:
+            self._run("Edit/Fill")
+        finally:
+            set_main_color(old)
+
     def deselect(self):
         self._run("Select/Deselect")
 
@@ -257,6 +331,29 @@ class Document:
     def new_folder(self, name=None):
         """Same as Layer > New Layer Folder (undoable). Returns the new folder."""
         return self._create(_new_folder, name)
+
+    def new_vector_layer(self, name=None):
+        """A new vector layer above the current one, like New Raster Layer but vector (undoable)."""
+        return self._create(_new_vector_layer, name)
+
+    @property
+    def history(self):
+        """Undo step names, oldest first, up to the current state (what Edit > Undo would undo, last)."""
+        hist = self._history()
+        head, cur, steps = _u64(hist), _u64(hist + 0x20), []
+        n = _u64(head)  # first node
+        while n != cur and n != head and len(steps) < 100000:
+            steps.append(_pws_read(_u64(n + 0x10) + 0x10))  # PWDoCommand label at +0x10
+            n = _u64(n)
+        return steps
+
+    def undo(self, steps=1):
+        for _ in range(steps):
+            self._run("Edit/Undo")
+
+    def redo(self, steps=1):
+        for _ in range(steps):
+            self._run("Edit/Redo")
 
     def __eq__(self, other):
         return isinstance(other, Document) and other.ptr == self.ptr
@@ -279,6 +376,68 @@ def active_document():
     if not ptr or mem.rtti_name(ptr) != _DOC_CLASS:
         raise CspError("no open canvas")
     return Document(ptr)
+
+
+# --- export: File > Export (Single Layer) with two detours that answer its dialogs while csp.export runs
+_EXPORT_MENU = {".png": ".png (PNG)", ".jpg": ".jpg (JPEG)", ".jpeg": ".jpg (JPEG)", ".bmp": ".bmp (BMP)",
+                ".tif": ".tif (TIFF)", ".tiff": ".tif (TIFF)", ".tga": ".tga (Targa)",
+                ".psd": ".psd(Photoshop Document)", ".psb": ".psb(Photoshop Big Document)"}
+_pws_assign = _fn(0x1417FBF30, None, c_void_p, c_void_p)
+_FILE_DIALOG_T = ctypes.CFUNCTYPE(c_uint32, *[c_void_p] * 7)  # 1412201e0(PWString* out path, int*, dir, name, ...)
+_EXPORT_SETTINGS_T = ctypes.CFUNCTYPE(c_int32, *[c_void_p] * 5)  # 140686f10(sp<Doc>, settings, int* preview, path, sp)
+
+
+def _export_hooks():
+    """Install the detours once per CSP run; they live on the menu module so reloading csp doesn't re-patch."""
+    import menu  # owns _detour
+    hooks = getattr(menu, "_csp_export", None)
+    if hooks is not None:
+        return hooks
+    hooks = {"path": None}
+
+    def on_file_dialog(out, *rest):
+        try:
+            if hooks["path"]:
+                s = _pws_new(hooks["path"])
+                try:
+                    _pws_assign(out, ctypes.addressof(s))  # the chosen file
+                finally:
+                    _pws_free(ctypes.addressof(s))
+                return 1  # OK
+        except BaseException:  # never unwind into CSP: show the real dialog instead
+            pass
+        return file_dialog(out, *rest)
+
+    def on_settings(doc, settings, preview, path, extra):
+        if hooks["path"]:
+            c_int32.from_address(preview).value = 0  # no "Export preview" dialog
+            _sp_release(doc)  # the original consumes both shared_ptrs
+            _sp_release(extra)
+            return 1  # OK: keep the last-used settings 1406898d0 loaded
+        return settings_dialog(doc, settings, preview, path, extra)
+
+    file_dialog = menu._detour(0x1412201E0, "48895c2408 48896c2410 4889742418 57", _FILE_DIALOG_T, on_file_dialog)[0]
+    settings_dialog = menu._detour(0x140686F10, "4055 53 56 57 4154 4155 4156 4157 488dac2418fdffff",
+                                   _EXPORT_SETTINGS_T, on_settings)[0]
+    menu._csp_export = hooks
+    return hooks
+
+
+def _call_virtual(obj, offset):
+    ctypes.CFUNCTYPE(None, c_void_p)(_u64(_u64(obj) + offset))(obj)
+
+
+# --- selection (PWSelectArea: +8 owner of the mask raster, +0x18 int[4] bounds ltrb, +0x28 state)
+_select_area = _fn(0x14046F810, c_void_p, c_void_p, c_void_p)  # (sp<PWSelectArea>* out, sp<Doc>)
+_select_cmd = _fn(0x1422B77B0, c_void_p, c_void_p, c_void_p, c_int32)  # (sp<cmd>* out, sp<area> by value, 0)
+_area_reset = _fn(0x141AA5EF0, None, c_void_p, c_int32, c_int32, c_int32)  # (area, w, h, clear)
+_get_raster = _fn(0x141246E60, c_void_p, c_void_p, c_void_p)  # (owner, sp<PWVOffscreen>* out)
+_value_init = _fn(0x14181BDB0, None, c_void_p)
+_value_set = _fn(0x14181C460, None, c_void_p, c_int32, c_int32)
+_fill_rect = _fn(0x1426609F0, c_int32, c_void_p, c_void_p, c_void_p, c_int32)  # (raster, int[4] ltrb, value, 0)
+_push = _fn(0x141374A40, None, c_void_p, c_void_p)  # (executor, sp<cmd> by value): run + record
+_selection_changed = _fn(0x140486EF0, None, c_void_p)  # (sp<Doc>): UI refresh after a selection change
+_selection_changed2 = _fn(0x140486E40, None, c_void_p)
 
 
 # --- PWString: +0 vtable, +8 heap wchar* (0 = inline at +0x20), +0x10 shared ctrl, +0x18 len, +0x1C cap, size 0x30
@@ -305,6 +464,7 @@ def _pws_new(text):
 # --- layers
 _new_raster_layer = _fn(0x1404778B0, None, c_void_p)
 _new_folder = _fn(0x140476940, None, c_void_p)
+_new_vector_layer = _fn(0x1404AB9C0, None, c_void_p)  # same shape as the raster one, no dialog
 _current_layer = _fn(0x14046DBD0, c_void_p, c_void_p, c_void_p)
 _set_layer_name = _fn(0x141932CC0, None, c_void_p, c_void_p)
 _LAYER_CLASS = ".?AVPWLayer@Planeswalker@@"  # raster layers and folders alike
@@ -324,10 +484,20 @@ _text_count = _fn(0x1402312D0, c_int32, c_void_p)  # (mgr) -> blocks
 _text_data = _fn(0x141AEC7A0, c_void_p, c_void_p, c_void_p, c_int32)  # (mgr, sp<PWData>* out, block): UTF-8
 
 
+class BlendMode(enum.IntEnum):
+    """The Layer palette's blending modes (checked live against the palette's label for each number)."""
+    NORMAL, DARKEN, MULTIPLY, COLOR_BURN, LINEAR_BURN, SUBTRACT, DARKER_COLOR = range(7)
+    LIGHTEN, SCREEN, COLOR_DODGE, GLOW_DODGE, ADD, ADD_GLOW, LIGHTER_COLOR = range(7, 14)
+    OVERLAY, SOFT_LIGHT, HARD_LIGHT, VIVID_LIGHT, LINEAR_LIGHT, PIN_LIGHT, HARD_MIX = range(14, 21)
+    DIFFERENCE, EXCLUSION, HUE, SATURATION, COLOR, BRIGHTNESS = range(21, 27)
+    THROUGH = 30  # folders only
+    DIVIDE = 36
+    # 27-29 and 31-35 are CSP-internal (Erase, Dissolve, Background, Replace alpha, ...), 37+ show as "Unknown"
+
+
 class Layer:
     """A layer or folder of `document`. Setters go through CSP's Layer-palette actions (undoable like the UI;
-    visibility isn't undoable in CSP either), selecting the layer for the moment they run. blend_mode is CSP's number: 0 Normal, 2 Multiply, 8 Screen, ...
-    (the Layer palette's list order, as far as checked)."""
+    visibility isn't undoable in CSP either), selecting the layer for the moment they run."""
 
     # shortcut: raw pointer, no ref. The class check catches most deleted layers, but freed memory can still
     # carry the vtable; hold a shared_ptr once there's a need to keep layers across deletes.
@@ -388,10 +558,14 @@ class Layer:
 
     @property
     def blend_mode(self):
-        return self._int(0x1A4)
+        """A BlendMode (a plain int for modes the palette doesn't offer)."""
+        mode = self._int(0x1A4)
+        return BlendMode(mode) if mode in BlendMode._value2member_map_ else mode
 
     @blend_mode.setter
     def blend_mode(self, mode):
+        if mode not in BlendMode._value2member_map_:
+            raise CspError(f"unknown blend mode {mode!r}; see csp.BlendMode")
         self._on_selection(_set_blend_mode, int(mode))
 
     @property
@@ -626,3 +800,58 @@ def run(command):
     if not on:
         raise CspError(f"{command!r} is disabled right now")
     _execute(bar, cmd, param)
+
+
+# --- drawing colors: PWCurrentColorManager (1414854b0 returns it). +8 active slot (0 main, 1 sub), +0x10 + slot*0x58
+# a PWColorSaver whose RGB is at +0x10 as three uint32 channels holding the 8-bit value in every byte.
+_color_manager = _fn(0x1414854B0, c_void_p)
+_color_copy = _fn(0x1413954C0, c_void_p, c_void_p, c_void_p)  # (out, src): copy-construct
+_color_free = _fn(0x141395710, None, c_void_p)
+_color_set_rgb = _fn(0x141396200, None, c_void_p, c_void_p)  # (color, uint32[3])
+_color_set_slot = _fn(0x141486BA0, None, c_uint32, c_void_p)  # (slot, color*): sets it, makes it active, notifies
+
+
+def _get_color(slot):
+    _app()  # UI-thread check
+    rgb = _color_manager() + 0x10 + slot * 0x58 + 0x10
+    return tuple(c_uint32.from_address(rgb + 4 * i).value >> 24 for i in range(3))
+
+
+def _set_color(slot, rgb):
+    if len(rgb) != 3 or not all(isinstance(v, int) and 0 <= v <= 255 for v in rgb):
+        raise CspError(f"color must be three ints 0..255, not {rgb!r}")
+    _app()
+    mgr = _color_manager()
+    active = c_int32.from_address(mgr + 8).value
+    _write_slot(mgr, slot, rgb)
+    if active in (0, 1) and active != slot:
+        _write_slot(mgr, active, None)  # writing a slot also selects it: reselect the one that was active
+
+
+def _write_slot(mgr, slot, rgb):
+    color = ctypes.create_string_buffer(0x80)  # PWColorSaver is 0x58
+    _color_copy(color, mgr + 0x10 + slot * 0x58)
+    try:
+        if rgb:
+            _color_set_rgb(color, (c_uint32 * 3)(*[v * 0x01010101 for v in rgb]))
+        _color_set_slot(slot, color)
+    finally:
+        _color_free(color)
+
+
+def main_color():
+    """The main drawing color as (r, g, b), 0..255."""
+    return _get_color(0)
+
+
+def sub_color():
+    return _get_color(1)
+
+
+def set_main_color(rgb):
+    _set_color(0, rgb)
+
+
+def set_sub_color(rgb):
+    """Set the sub color; whichever of main/sub was active stays active."""
+    _set_color(1, rgb)

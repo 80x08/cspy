@@ -31,16 +31,22 @@ For another machine, copy `dist\` + `install.ps1` there and run the install step
 ```python
 doc = csp.active_document()           # csp.documents(): all open canvases, in tab order
 layer = doc.new_raster_layer("ink")   # undoable, like Layer > New Raster Layer
-folder = doc.new_folder("group")
+folder = doc.new_folder("group")       # also doc.new_vector_layer()
 doc.active_layer.name = "renamed"     # not undoable
-layer.opacity = 50                    # 0..100; also blend_mode, visible, locked, lock_transparency, clip
+layer.opacity = 50                    # 0..100; also visible, locked, lock_transparency, clip
+layer.blend_mode = csp.BlendMode.MULTIPLY   # SCREEN, OVERLAY, ... DIVIDE; THROUGH for folders
 doc.active_layer = layer              # select it
 doc.layers, folder.children, layer.parent, layer.is_folder   # the layer tree, top to bottom
+doc.history, doc.undo(2), doc.redo()  # undo step names (oldest first); CSP merges repeated same-kind changes
 with doc.undo_group("My script"):      # everything inside is one undo step (csp.undo_group: active canvas)
     ...
 layer.duplicate(), layer.merge_down(), layer.remove(), layer.move("up")   # top/up/down/bottom
 doc.name, doc.width, doc.height, doc.resolution, doc.modified   # "Illustration", 1600, 1200, 72.0, True
 layer.is_text, layer.text                 # text layers, read-only (None for other layers)
+csp.main_color(), csp.set_main_color((255, 0, 0))   # also sub_color / set_sub_color; (r, g, b) 0..255
+doc.select_rect(100, 100, 400, 300)   # left, top, right, bottom (undoable)
+doc.fill(), doc.fill((0, 128, 255))   # Edit > Fill with the main color, or with this color
+doc.export(r"C:\out\page.png")      # no dialogs; .png .jpg .bmp .tif .tga .psd .psb; last-used settings
 doc.find("ink"), doc.walk()           # first layer by name; every layer, depth first
 doc.flatten(), doc.merge_visible(), doc.save(), doc.select_all(), doc.deselect(), doc.invert_selection()
 csp.run("Layer/Duplicate Layer")      # any main-menu command, like clicking it (dialogs wait until closed)
