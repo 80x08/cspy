@@ -11,7 +11,10 @@ import contextlib
 import ctypes
 import enum
 import os
+import struct
 import sys
+import tempfile
+import zlib
 from ctypes import c_double, c_int32, c_uint32, c_uint64, c_void_p
 
 import mem
@@ -306,6 +309,19 @@ class Document:
         if not os.path.exists(path) or os.stat(path).st_mtime_ns == before:
             raise CspError(f"CSP did not write {path!r}")
 
+    def image(self):
+        """The canvas as you see it (visible layers merged) as an Image."""
+        # shortcut: goes through a temporary .tga export (CSP's last Targa settings); read the layer rasters
+        # directly if that gets too slow or a setting gets in the way.
+        with tempfile.TemporaryDirectory(prefix="cspy-") as folder:
+            path = os.path.join(folder, "canvas.tga")
+            self.export(path)
+            image = _read_tga(path)
+        if (image.width, image.height) != (self.width, self.height):
+            raise CspError(f"the Targa export settings scale the image to {image.width} x {image.height}; "
+                           "export a .tga once by hand at 100% and try again")
+        return image
+
     def fill(self, rgb=None):
         """Edit > Fill: fill the selection (whole layer without one) on the current layer with the main
         color, or with `rgb` (the main color is put back afterwards)."""
@@ -376,6 +392,75 @@ def active_document():
     if not ptr or mem.rtti_name(ptr) != _DOC_CLASS:
         raise CspError("no open canvas")
     return Document(ptr)
+
+
+class Image:
+    """RGBA pixels, rows from the top: the pixel at (x, y) is data[(y * width + x) * 4:][:4] = r, g, b, a."""
+
+    def __init__(self, width, height, data):
+        self.width, self.height, self.data = width, height, bytes(data)
+
+    def pixel(self, x, y):
+        if not (0 <= x < self.width and 0 <= y < self.height):
+            raise IndexError(f"({x}, {y}) is outside {self.width} x {self.height}")
+        i = (y * self.width + x) * 4
+        return tuple(self.data[i:i + 4])
+
+    def save(self, path):
+        """Write a PNG."""
+        stride = self.width * 4
+        rows = b"".join(b"\0" + self.data[y * stride:(y + 1) * stride] for y in range(self.height))
+
+        def chunk(kind, body):
+            return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+        with open(path, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", self.width, self.height, 8, 6, 0, 0, 0))
+                    + chunk(b"IDAT", zlib.compress(rows, 6)) + chunk(b"IEND", b""))
+
+    def __repr__(self):
+        return f"<Image {self.width} x {self.height}>"
+
+
+def _read_tga(path):
+    """CSP's .tga export: color (BGR / BGRA) or, for gray content, gray (G / GA); raw or run-length encoded."""
+    with open(path, "rb") as f:
+        t = f.read()
+    kind, (w, h), bpp, desc = t[2], struct.unpack_from("<HH", t, 12), t[16], t[17]
+    gray = kind in (3, 11)
+    if kind not in (2, 3, 10, 11) or (gray and bpp not in (8, 16)) or (not gray and bpp not in (24, 32)):
+        raise CspError(f"unexpected Targa export (type {kind}, {bpp} bits)")
+    px, n, i = bpp // 8, w * h, 18 + t[0]
+    if kind in (2, 3):
+        src = t[i:i + n * px]
+    else:
+        out = bytearray()
+        while len(out) < n * px:
+            head = t[i]
+            k = (head & 0x7F) + 1
+            if head & 0x80:  # one pixel repeated
+                out += t[i + 1:i + 1 + px] * k
+                i += 1 + px
+            else:  # k literal pixels
+                out += t[i + 1:i + 1 + px * k]
+                i += 1 + px * k
+        src = out
+    if len(src) != n * px:
+        raise CspError("truncated Targa export")
+    rgba = bytearray(b"\xff") * (n * 4)
+    if gray:
+        for c in range(3):
+            rgba[c::4] = src[0::px]
+        if px == 2:
+            rgba[3::4] = src[1::2]
+    else:
+        rgba[0::4], rgba[1::4], rgba[2::4] = src[2::px], src[1::px], src[0::px]
+        if px == 4:
+            rgba[3::4] = src[3::4]
+    if not desc & 0x20:  # rows stored bottom-up
+        stride = w * 4
+        rgba = b"".join(rgba[y * stride:(y + 1) * stride] for y in range(h - 1, -1, -1))
+    return Image(w, h, rgba)
 
 
 # --- export: File > Export (Single Layer) with two detours that answer its dialogs while csp.export runs
@@ -620,6 +705,32 @@ class Layer:
             return "\n".join(blocks)
         finally:
             _sp_release(ctypes.addressof(mgr))
+
+    def image(self):
+        """This layer alone as an Image: the canvas exported with every other layer hidden for the moment
+        (with its opacity and blend mode; a clipped layer shows only where its base is, so it comes out empty).
+        Visibility isn't undoable in CSP, so this adds no undo steps; everything is shown again afterwards."""
+        ancestors, up = [], self.parent
+        while up:
+            ancestors.append(up)
+            up = up.parent
+        changed = []
+
+        def show_only(layers):
+            for layer in layers:
+                want = layer == self or layer in ancestors
+                if layer.visible != want:
+                    layer.visible = want
+                    changed.append(layer)
+                if layer in ancestors:
+                    show_only(layer.children)
+
+        try:
+            show_only(self.document.layers)
+            return self.document.image()
+        finally:
+            for layer in reversed(changed):
+                layer.visible = not layer.visible
 
     @property
     def is_folder(self):

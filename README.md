@@ -47,6 +47,8 @@ csp.main_color(), csp.set_main_color((255, 0, 0))   # also sub_color / set_sub_c
 doc.select_rect(100, 100, 400, 300)   # left, top, right, bottom (undoable)
 doc.fill(), doc.fill((0, 128, 255))   # Edit > Fill with the main color, or with this color
 doc.export(r"C:\out\page.png")      # no dialogs; .png .jpg .bmp .tif .tga .psd .psb; last-used settings
+img = doc.image()                     # the canvas as you see it; layer.image(): that layer alone
+img.width, img.height, img.pixel(10, 20), img.data, img.save(r"C:\out\x.png")   # RGBA bytes, rows from the top
 doc.find("ink"), doc.walk()           # first layer by name; every layer, depth first
 doc.flatten(), doc.merge_visible(), doc.save(), doc.select_all(), doc.deselect(), doc.invert_selection()
 csp.run("Layer/Duplicate Layer")      # any main-menu command, like clicking it (dialogs wait until closed)

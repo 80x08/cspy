@@ -188,6 +188,22 @@ for bad in ("x.gif", os.path.join(tempfile.gettempdir(), "no such folder", "x.pn
     else:
         raise AssertionError(f"export to {bad!r} accepted")
 
+# reading pixels: the merged canvas and one layer alone (other layers hidden for the moment)
+h0, vis0 = doc.history, [(layer, layer.visible) for layer in doc.walk()]
+red = doc.new_raster_layer("cspy red")
+doc.select_rect(10, 10, 30, 20)
+doc.fill((255, 0, 0))
+doc.deselect()
+try:
+    whole, alone = doc.image(), red.image()
+    assert (whole.width, whole.height) == (doc.width, doc.height)
+    assert whole.pixel(15, 15) == (255, 0, 0, 255) and alone.pixel(15, 15) == (255, 0, 0, 255)
+    assert alone.pixel(40, 40)[3] == 0, "outside the layer's pixels must be transparent"
+    assert all(layer.visible == v for layer, v in vis0) and red.visible, "visibility must be restored"
+finally:
+    doc.undo(len(doc.history) - len(h0))
+assert doc.history == h0 and doc.layers == before_layers
+
 try:
     csp.Layer(0x10, doc).name
 except CspError:
