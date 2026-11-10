@@ -166,6 +166,24 @@ try:
         pass
     else:
         raise AssertionError("empty rectangle accepted")
+    doc.select_rect(100, 100, 200, 150)
+    doc.expand_selection(10, kind=1)  # kind 1: square corners
+    assert doc.history[-1] == "Expand selection"
+    grown = doc.new_raster_layer("cspy grown")
+    doc.fill()
+    assert grown.bounds == (90, 90, 210, 160), grown.bounds
+    doc.select_rect(100, 100, 200, 150)
+    doc.shrink_selection(20)
+    shrunk = doc.new_raster_layer("cspy shrunk")
+    doc.fill()
+    assert shrunk.bounds == (120, 120, 180, 130), shrunk.bounds
+    doc.deselect()
+    try:
+        doc.expand_selection(5)
+    except CspError:
+        pass
+    else:
+        raise AssertionError("expanded without a selection")
     doc.undo(len(doc.history) - len(h0))
     assert doc.history == h0 and doc.layers == before_layers and not csp.enabled("Select/Deselect")
 finally:

@@ -401,6 +401,31 @@ class Document:
     def deselect(self):
         self._run("Select/Deselect")
 
+    def expand_selection(self, pixels, kind=0):
+        """Select > Expand selected area by `pixels` without the dialog (kind: the dialog's expand type, 0 =
+        its first choice). One undo step."""
+        self._grow_selection(_expand_selection, "Expand selection", pixels, kind)
+
+    def shrink_selection(self, pixels, kind=0):
+        """Select > Shrink selected area by `pixels` without the dialog. One undo step."""
+        self._grow_selection(_shrink_selection, "Shrink selection", pixels, kind, 0)
+
+    def _grow_selection(self, apply, name, pixels, kind, *extra):
+        # the dialogs' handlers (1404840e0, 140486040) end in these with (sp<Doc>, sp<PWSelectArea>) by value
+        if not (isinstance(pixels, int) and pixels >= 1):
+            raise CspError(f"pixels must be an int >= 1, not {pixels!r}")
+        if not enabled("Select/Deselect"):
+            raise CspError("nothing is selected")
+        doc, doc2, area, label = self._sp(), self._sp(), (c_uint64 * 2)(), _pws_new(name)
+        _select_area(ctypes.addressof(area), ctypes.addressof(doc2))
+        try:
+            apply(ctypes.addressof(doc), ctypes.addressof(area), pixels, kind, *extra, ctypes.addressof(label))
+        finally:
+            _pws_free(ctypes.addressof(label))
+        for refresh in (_selection_changed, _selection_changed2):
+            doc = self._sp()
+            refresh(ctypes.addressof(doc))
+
     def _selection_bounds(self):
         """The box CSP keeps around the selection (left, top, right, bottom), or None without one. Exact right
         after Create Selection; after an undo CSP may widen it to the whole canvas."""
@@ -796,6 +821,8 @@ _fill_rect = _fn(0x1426609F0, c_int32, c_void_p, c_void_p, c_void_p, c_int32)  #
 _push = _fn(0x141374A40, None, c_void_p, c_void_p)  # (executor, sp<cmd> by value): run + record
 _selection_changed = _fn(0x140486EF0, None, c_void_p)  # (sp<Doc>): UI refresh after a selection change
 _selection_changed2 = _fn(0x140486E40, None, c_void_p)
+_expand_selection = _fn(0x140512870, None, c_void_p, c_void_p, c_int32, c_int32, c_void_p)  # (.., px, type, label)
+_shrink_selection = _fn(0x140515830, None, c_void_p, c_void_p, c_int32, c_int32, c_int32, c_void_p)  # +on/off
 _change_canvas = _fn(0x1404E5B20, None, c_void_p, c_void_p, c_int32, c_int32, c_void_p)
 # (sp<Doc>, {double, unit}* width, height, dpi, scale, [quality,] PWString* label): resample / keep pixels
 _resample = _fn(0x1404E5400, None, c_void_p, c_void_p, c_void_p, c_double, c_double, c_int32, c_void_p)

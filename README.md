@@ -45,6 +45,7 @@ doc.name, doc.width, doc.height, doc.resolution, doc.modified   # "Illustration"
 layer.is_text, layer.text                 # text layers, read-only (None for other layers)
 csp.main_color(), csp.set_main_color((255, 0, 0))   # also sub_color / set_sub_color; (r, g, b) 0..255
 doc.select_rect(100, 100, 400, 300)   # left, top, right, bottom (undoable)
+doc.expand_selection(10), doc.shrink_selection(5)   # no dialogs; expand_selection(10, kind=1): square corners
 doc.fill(), doc.fill((0, 128, 255))   # Edit > Fill with the main color, or with this color
 doc.export(r"C:\out\page.png")      # no dialogs; .png .jpg .bmp .tif .tga .psd .psb; last-used settings
 img = doc.image()                     # the canvas as you see it; layer.image(): that layer alone
