@@ -218,6 +218,20 @@ assert b.bounds == (30, 40, 130, 90) and doc.history == h1 and csp.enabled("Sele
 doc.deselect()
 b.flip()
 assert b.bounds == (30, 40, 130, 90) and b.image().pixel(125, 50)[:3] == (255, 0, 0), "flip mirrors in place"
+hm = len(doc.history)
+b.translate(200, 100)
+assert b.bounds == (230, 140, 330, 190) and len(doc.history) == hm + 1, b.bounds
+b.translate(-250, -130)  # partly off the canvas: CSP keeps the hidden part
+assert b.bounds == (0, 10, 80, 60), b.bounds
+b.translate(50, 30)
+assert b.bounds == (30, 40, 130, 90) and b.image().pixel(125, 50)[:3] == (255, 0, 0), b.bounds
+try:
+    doc.new_raster_layer("cspy empty").translate(1, 1)
+except CspError:
+    pass
+else:
+    raise AssertionError("moved an empty layer")
+doc.active_layer = b
 doc.select_rect(30, 40, 60, 90)
 doc.copy()
 pasted = doc.paste()

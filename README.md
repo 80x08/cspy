@@ -56,6 +56,7 @@ doc.save_as(r"C:\out\page.clip")      # no dialog, .clip only (other formats: ex
 doc.close()                           # refuses unsaved changes: save first
 layer = doc.place(r"C:\in\photo.png")  # File > Import > Image as a new layer
 layer.bounds                          # (left, top, right, bottom) of its pixels, None if empty
+layer.translate(200, -50)             # move its pixels (one undo step; raster layers)
 layer.flip("horizontal")              # in place; doc.flip("vertical"), doc.rotate(90 / 180 / -90): whole canvas
 doc.crop()                            # canvas to the selection
 doc.copy(), doc.cut(), doc.paste()    # paste returns the new layer
