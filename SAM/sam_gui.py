@@ -82,6 +82,7 @@ class App:
         ttk.Separator(side).pack(fill="x", pady=8)
         ttk.Label(side, text="Grow (+) / shrink (-) px").pack(anchor="w")
         self.grow = tk.IntVar(value=0)
+        self.grow.trace_add("write", lambda *_: self._draw())  # arrows and typing both redraw the preview
         ttk.Spinbox(side, from_=-200, to=200, textvariable=self.grow, width=8).pack(anchor="w")
         self.invert = tk.BooleanVar()
         ttk.Checkbutton(side, text="Invert", variable=self.invert, command=self._draw).pack(anchor="w", pady=4)
@@ -213,10 +214,29 @@ class App:
         self.root.after(50, self._poll)
 
     # --- drawing
+    def _grow_px(self):
+        try:
+            return int(self.grow.get())
+        except (tk.TclError, ValueError):  # half-typed value in the spinbox
+            return 0
+
     def _shown_mask(self):
+        """The mask as CSP will select it: grown / shrunk (round corners, like expand_selection's default and
+        shrink_selection without from_edges) and inverted."""
         if self.mask is None:
             return None
-        return ~self.mask if self.invert.get() else self.mask
+        grow = self._grow_px()
+        cached = getattr(self, "_grown", None)
+        if not cached or cached[0] is not self.mask or cached[1] != grow:
+            from scipy.ndimage import distance_transform_edt
+            if grow > 0:
+                mask = distance_transform_edt(~self.mask) <= grow
+            elif grow < 0:
+                mask = distance_transform_edt(self.mask) > -grow
+            else:
+                mask = self.mask
+            self._grown = cached = (self.mask, grow, mask)
+        return ~cached[2] if self.invert.get() else cached[2]
 
     def _draw(self):
         img = self.view
