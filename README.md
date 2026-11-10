@@ -45,6 +45,7 @@ doc.name, doc.width, doc.height, doc.resolution, doc.modified   # "Illustration"
 layer.is_text, layer.text                 # text layers, read-only (None for other layers)
 csp.main_color(), csp.set_main_color((255, 0, 0))   # also sub_color / set_sub_color; (r, g, b) 0..255
 doc.select_rect(100, 100, 400, 300)   # left, top, right, bottom (undoable)
+doc.select_mask(img)                  # select where a canvas-sized Image's alpha >= 128 (undoable)
 doc.expand_selection(10), doc.shrink_selection(5, from_edges=True)  # no dialogs; expand_selection(10, kind=1): square corners
 doc.fill(), doc.fill((0, 128, 255))   # Edit > Fill with the main color, or with this color
 doc.export(r"C:\out\page.png")      # no dialogs; .png .jpg .bmp .tif .tga .psd .psb; last-used settings
@@ -73,6 +74,10 @@ csp.commands()                        # {"Edit/Undo": (command id, param), ...}
 These menu-backed methods select the layer first and only work on the active canvas (else `CspError`).
 `csp.current_layer()`, `csp.new_raster_layer()` and `csp.new_folder()` are shortcuts for the active canvas.
 Failures raise `csp.CspError`; calling `csp` off CSP's UI thread raises it too.
+
+## Segment Anything
+`SAM/` holds a Segment Anything 3 selection window: Scripts > sam_select opens it on the current layer; pick an
+object by clicks, a box or text ("hair") and Apply sets the canvas selection. Setup and notes: `SAM/README.md`.
 
 ## License
 GPL-3.0, see `LICENSE`.

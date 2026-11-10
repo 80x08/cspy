@@ -166,6 +166,24 @@ try:
         pass
     else:
         raise AssertionError("empty rectangle accepted")
+    W, H = doc.width, doc.height  # select_mask: two blocks from an RGBA image
+    px = bytearray(W * H * 4)
+    for x0, y0, x1, y1 in ((10, 10, 40, 30), (60, 20, 90, 50)):
+        for y in range(y0, y1):
+            px[(y * W + x0) * 4 + 3:(y * W + x1) * 4:4] = b"\xff" * (x1 - x0)
+    doc.select_mask(csp.Image(W, H, px))
+    assert doc.history[-1] == "Select mask"
+    masked = doc.new_raster_layer("cspy masked")
+    doc.fill()
+    img = masked.image()
+    assert masked.bounds == (10, 10, 90, 50) and img.pixel(20, 15)[3] and img.pixel(70, 40)[3], masked.bounds
+    assert not img.pixel(50, 15)[3] and not img.pixel(20, 40)[3], "outside the mask got filled"
+    try:
+        doc.select_mask(csp.Image(W, H, bytes(W * H * 4)))
+    except CspError:
+        pass
+    else:
+        raise AssertionError("empty mask accepted")
     doc.select_rect(100, 100, 200, 150)
     doc.expand_selection(10, kind=1)  # kind 1: square corners
     assert doc.history[-1] == "Expand selection"

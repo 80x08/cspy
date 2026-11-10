@@ -11,6 +11,7 @@ import contextlib
 import ctypes
 import enum
 import os
+import re
 import struct
 import sys
 import tempfile
@@ -317,6 +318,24 @@ class Document:
         """Replace the selection with this rectangle (canvas pixels; right/bottom exclusive). One undo step."""
         if not (left < right and top < bottom):
             raise CspError(f"empty rectangle {(left, top, right, bottom)}")
+        self._set_selection([(left, top, right, bottom)], "Select rectangle")
+
+    def select_mask(self, image, threshold=128):
+        """Replace the selection with the pixels of `image` (an Image the size of the canvas) whose alpha is
+        >= threshold. Hard-edged (no partial selection). One undo step."""
+        w, h = self.width, self.height
+        if (image.width, image.height) != (w, h):
+            raise CspError(f"mask is {image.width} x {image.height}, the canvas {w} x {h}")
+        on = bytes(1 if a >= threshold else 0 for a in range(256))
+        alpha = image.data[3::4].translate(on)
+        rects = [(m.start(), y, m.end(), y + 1)
+                 for y in range(h) for m in re.finditer(b"+", alpha[y * w:(y + 1) * w])]
+        if not rects:
+            raise CspError("the mask selects nothing")
+        self._set_selection(rects, "Select mask")
+
+    def _set_selection(self, rects, name):
+        """Replace the selection with the union of rects (ltrb, canvas pixels): one undo step named `name`."""
         if active_document() != self:
             raise CspError(f"{self!r} is not the active canvas")
         _call_virtual(self.ptr, 0x48)  # what Select All does first (ends whatever the canvas was doing)
@@ -324,11 +343,11 @@ class Document:
         doc = self._sp()
         _select_area(ctypes.addressof(area), ctypes.addressof(doc))
         try:
-            # Select All's recipe (140481da0 -> 140510000 -> 141aa5ff0) with our rectangle.
+            # Select All's recipe (140481da0 -> 140510000 -> 141aa5ff0) with our rectangles.
             cmd, snap = (c_uint64 * 2)(), (c_uint64 * 2)(area[0], area[1])
             _addref(area[1])
             _select_cmd(ctypes.addressof(cmd), ctypes.addressof(snap), 0)  # undo snapshot of the selection
-            label = _pws_new("Select rectangle")
+            label = _pws_new(name)
             try:
                 _cmd_set_label(cmd[0], ctypes.addressof(label))
             finally:
@@ -337,12 +356,16 @@ class Document:
             mask = (c_uint64 * 2)()
             _get_raster(_u64(area[0] + 8), ctypes.addressof(mask))
             try:
-                bounds = (c_int32 * 4).from_address(area[0] + 0x18)
-                bounds[:] = [left, top, right, bottom]
                 value = ctypes.create_string_buffer(8)
                 _value_init(value)
                 _value_set(value, 0xFF, 0xFF)
-                _fill_rect(mask[0], ctypes.addressof(bounds), value, 0)  # clipped to the canvas
+                rect = (c_int32 * 4)()
+                for r in rects:
+                    rect[:] = r
+                    _fill_rect(mask[0], ctypes.addressof(rect), value, 0)  # clipped to the canvas
+                bounds = (c_int32 * 4).from_address(area[0] + 0x18)
+                bounds[:] = [min(r[0] for r in rects), min(r[1] for r in rects),
+                             max(r[2] for r in rects), max(r[3] for r in rects)]
                 c_int32.from_address(area[0] + 0x28).value = 2  # "has a selection", as Select All sets
             finally:
                 _sp_release(ctypes.addressof(mask))
