@@ -646,36 +646,43 @@ _FLIP_INFO = 0x141B10B50
 _INFO_T = ctypes.CFUNCTYPE(None, c_void_p)
 
 
-def _move_hooks():
-    """Detour the flip once per CSP run: while hooks["by"] = (dx, dy), the next flip moves instead."""
+def _edit_info(info, edit):
+    """Apply edit = (point_map, sx, sy) to a PWResizableImageInfo: center and corners go through
+    point_map((x, y)) -> (x, y) and the scale is multiplied by sx, sy. -> done."""
+    # shortcut: raster only (kind 0/1); vector kinds also keep a copy of the points at +0x98.
+    if c_uint32.from_address(info + 0x10).value >= 2:
+        return False
+    point_map, sx, sy = edit
+    first, end = _u64(info + 0x28), _u64(info + 0x30)
+    for p in [info + 0x58, *range(first, end, 16)]:  # center, then corners
+        xy = (c_double * 2).from_address(p)
+        xy[:] = point_map(tuple(xy))
+    for off, k in ((0x40, sx), (0x48, sy)):
+        c_double.from_address(info + off).value *= k
+    return True
+
+
+def _transform_hooks():
+    """Detour the flip once per CSP run: while hooks["edit"] is set, the next flip runs _edit_info instead
+    (looked up at call time, so reloading csp takes effect)."""
     import menu
-    hooks = getattr(menu, "_csp_move", None)
+    hooks = getattr(menu, "_csp_transform", None)
     if hooks is not None:
         return hooks
-    hooks = {"by": None, "done": False}
+    hooks = {"edit": None, "done": False}
 
     def on_flip(info):
         try:
-            by, hooks["by"] = hooks["by"], None
-            # shortcut: raster only (kind 0/1); vector kinds also keep a copy of the points at +0x98.
-            if by and c_uint32.from_address(info + 0x10).value < 2:
-                dx, dy = by
-                for off, d in ((0x58, dx), (0x60, dy)):
-                    c_double.from_address(info + off).value += d
-                first, end = _u64(info + 0x28), _u64(info + 0x30)
-                for p in range(first, end, 16):
-                    c_double.from_address(p).value += dx
-                    c_double.from_address(p + 8).value += dy
-                hooks["done"] = True
-                return
-            if by:
-                return  # unsupported: leave it unflipped, translate() cancels
+            edit, hooks["edit"] = hooks["edit"], None
+            if edit:
+                hooks["done"] = sys.modules["csp"]._edit_info(info, edit)
+                return  # not done: left as it was, _transform() cancels
         except BaseException:  # never unwind into CSP
             return
         flip(info)
 
     flip = menu._detour(_FLIP_INFO, "48895c2418 57 4883ec20 488b5128", _INFO_T, on_flip)[0]
-    menu._csp_move = hooks
+    menu._csp_transform = hooks
     return hooks
 
 
@@ -956,7 +963,8 @@ class Layer:
     @property
     def bounds(self):
         """(left, top, right, bottom) around this layer's pixels (right/bottom exclusive), None if empty.
-        Uses Layer > Selection from Layer and undoes it again, so the selection is left as it was."""
+        Only the part on the canvas counts. Uses Layer > Selection from Layer and undoes it again, so the
+        selection is left as it was."""
         doc = self.document
         steps = len(doc.history)
         doc.active_layer = self
@@ -977,22 +985,36 @@ class Layer:
         finally:
             doc.undo(len(doc.history) - steps)
 
-    def translate(self, dx, dy):
-        """Move this layer's pixels by (dx, dy) canvas pixels (one undo step "Scale/Rotate", like dragging it
-        with Edit > Transform). Raster layers only."""
-        doc, hooks = self.document, _move_hooks()
+    def _transform(self, point_map, sx=1.0, sy=1.0):
+        """Edit > Transform with the transform changed by _transform_hooks, then OK (one undo step)."""
+        doc, hooks = self.document, _transform_hooks()
         if self.bounds is None:  # CSP would show "There is no object to transform"
             raise CspError(f"{self!r} is empty")
         self._run("Edit/Transform/Scale/Rotate")
-        hooks.update(by=(float(dx), float(dy)), done=False)
+        hooks.update(edit=(point_map, sx, sy), done=False)
         try:
-            run("Edit/Transform/Flip Horizontal")  # the detour turns this flip into the move
+            run("Edit/Transform/Flip Horizontal")  # the detour turns this flip into our change
         finally:
-            done, hooks["by"] = hooks["done"], None
+            done, hooks["edit"] = hooks["done"], None
         if not done:
             doc._run("Edit/Transform/Cancel")
-            raise CspError(f"can't move {self!r} (not a raster layer?)")
+            raise CspError(f"can't transform {self!r} (not a raster layer?)")
         doc._run("Edit/Transform/OK")
+
+    def translate(self, dx, dy):
+        """Move this layer's pixels by (dx, dy) canvas pixels (one undo step "Scale/Rotate", like dragging it
+        with Edit > Transform). Raster layers only."""
+        self._transform(lambda p: (p[0] + dx, p[1] + dy))
+
+    def resize(self, sx, sy=None):
+        """Scale this layer's pixels by sx (and sy, default sx; 0.5 = half size) around the center of its
+        (on-canvas) bounds, like Edit > Transform > Scale (one undo step). Raster layers only."""
+        sy = sx if sy is None else sy
+        if sx <= 0 or sy <= 0:
+            raise CspError(f"scale must be > 0, not {(sx, sy)!r}")
+        left, top, right, bottom = self.bounds or (0, 0, 0, 0)
+        cx, cy = (left + right) / 2, (top + bottom) / 2
+        self._transform(lambda p: (cx + (p[0] - cx) * sx, cy + (p[1] - cy) * sy), sx, sy)
 
     def flip(self, direction="horizontal"):
         """Mirror this layer within its own bounds: "horizontal" or "vertical" (one undo step)."""

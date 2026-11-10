@@ -225,6 +225,20 @@ b.translate(-250, -130)  # partly off the canvas: CSP keeps the hidden part
 assert b.bounds == (0, 10, 80, 60), b.bounds
 b.translate(50, 30)
 assert b.bounds == (30, 40, 130, 90) and b.image().pixel(125, 50)[:3] == (255, 0, 0), b.bounds
+b.translate(100, 100)  # bounds are clipped to the canvas: keep the resized box on it
+b.resize(2)
+assert b.bounds == (80, 115, 280, 215), b.bounds  # around the center (180, 165)
+b.resize(0.5, 1)
+assert b.bounds == (130, 115, 230, 215), b.bounds
+doc.undo(3)
+assert b.bounds == (30, 40, 130, 90)
+for bad in (0, -1):
+    try:
+        b.resize(bad)
+    except CspError:
+        pass
+    else:
+        raise AssertionError(f"resize({bad}) accepted")
 try:
     doc.new_raster_layer("cspy empty").translate(1, 1)
 except CspError:
