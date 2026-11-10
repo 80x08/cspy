@@ -204,6 +204,77 @@ finally:
     doc.undo(len(doc.history) - len(h0))
 assert doc.history == h0 and doc.layers == before_layers
 
+# bounds, layer / canvas flip and rotate, clipboard, crop: all undone again
+h0 = doc.history
+b = doc.new_raster_layer("cspy bounds")
+assert b.bounds is None, "empty layer has no bounds"
+doc.select_rect(30, 40, 130, 90)
+doc.fill((0, 0, 255))
+doc.select_rect(30, 40, 60, 90)
+doc.fill((255, 0, 0))  # red on the left third
+doc.select_rect(5, 5, 10, 10)
+h1 = doc.history
+assert b.bounds == (30, 40, 130, 90) and doc.history == h1 and csp.enabled("Select/Deselect"), "bounds keep the selection"
+doc.deselect()
+b.flip()
+assert b.bounds == (30, 40, 130, 90) and b.image().pixel(125, 50)[:3] == (255, 0, 0), "flip mirrors in place"
+doc.select_rect(30, 40, 60, 90)
+doc.copy()
+pasted = doc.paste()
+assert pasted != b and pasted.bounds == (30, 40, 60, 90), pasted.bounds
+doc.deselect()
+w, h = doc.width, doc.height
+doc.rotate(180)
+doc.flip("vertical")
+assert (doc.width, doc.height) == (w, h) and b.bounds == (w - 130, 40, w - 30, 90), b.bounds
+doc.select_rect(0, 0, w // 2, h // 2)
+doc.crop()
+assert (doc.width, doc.height) == (w // 2, h // 2)
+for bad in (lambda: doc.rotate(45), lambda: b.flip("diagonal")):
+    try:
+        bad()
+    except CspError:
+        pass
+    else:
+        raise AssertionError("bad argument accepted")
+doc.undo(len(doc.history) - len(h0))
+assert doc.history == h0 and doc.layers == before_layers and (doc.width, doc.height) == (w, h)
+
+# documents: save as .clip, open (a second tab), place an image as a layer, close
+folder = tempfile.mkdtemp(prefix="cspy-test-")
+clip, png = os.path.join(folder, "copy.clip"), os.path.join(folder, "canvas.png")
+doc.export(png)
+copy = csp.open_document(png)
+assert copy != doc and copy in csp.documents() and csp.active_document() == copy and copy.name == "canvas.png"
+assert csp.open_document(png) == copy, "opening it again returns the open one"
+layer = copy.place(png)
+assert layer.name == "canvas" and copy.history[-1] == "Import image file" and copy.modified
+try:
+    copy.close()
+except CspError:
+    pass
+else:
+    raise AssertionError("closed a canvas with unsaved changes")
+copy.save_as(clip)
+assert not copy.modified and copy.name == "copy"
+copy.close()
+assert copy not in csp.documents()
+reopened = csp.open_document(clip)
+assert [l.name for l in reopened.layers][0] == "canvas"
+reopened.close()
+for bad in (lambda: csp.open_document(os.path.join(folder, "missing.png")), lambda: doc.save_as(png)):
+    try:
+        bad()
+    except CspError:
+        pass
+    else:
+        raise AssertionError("bad path accepted")
+for f in (clip, png):
+    os.remove(f)
+os.rmdir(folder)
+doc.active_layer = start  # back on the original canvas
+assert csp.active_document() == doc
+
 try:
     csp.Layer(0x10, doc).name
 except CspError:

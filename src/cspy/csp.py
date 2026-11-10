@@ -246,6 +246,39 @@ class Document:
         """File > Save (a never-saved canvas opens the Save dialog)."""
         self._run("File/Save")
 
+    def save_as(self, path):
+        """File > Save as `path` (.clip) without the dialog; the canvas is then that file."""
+        path = os.path.abspath(path)
+        if os.path.splitext(path)[1].lower() != ".clip":
+            raise CspError(f"save_as writes .clip files; use export() for {path!r}")
+        if not os.path.isdir(os.path.dirname(path)):
+            raise CspError(f"folder {os.path.dirname(path)!r} doesn't exist")
+        before = os.stat(path).st_mtime_ns if os.path.exists(path) else None
+        hooks = _export_hooks()
+        hooks["path"] = path
+        try:
+            self._run("File/Save as")
+        finally:
+            hooks["path"] = None
+        if not os.path.exists(path) or os.stat(path).st_mtime_ns == before:
+            raise CspError(f"CSP did not write {path!r}")
+
+    def close(self):
+        """File > Close. Refuses a canvas with unsaved changes (CSP would ask): save() / save_as() first."""
+        # shortcut: no close-without-saving yet; needs the Save-changes prompt (a CSP dialog) answered.
+        if self.modified:
+            raise CspError(f"{self.name!r} has unsaved changes")
+        if active_document() != self:
+            raise CspError(f"{self!r} is not the active canvas")
+        run("File/Close")  # not _run: there's no active layer to return afterwards
+
+    def place(self, path):
+        """File > Import > Image: `path` as a new layer above the current one. Returns that layer."""
+        if active_document() != self:
+            raise CspError(f"{self!r} is not the active canvas")
+        _run_with_file("File/Import/Image", path)
+        return self.active_layer
+
     def select_all(self):
         self._run("Select/Select All")
 
@@ -336,6 +369,46 @@ class Document:
 
     def deselect(self):
         self._run("Select/Deselect")
+
+    def _selection_bounds(self):
+        """The box CSP keeps around the selection (left, top, right, bottom), or None without one. Exact right
+        after Create Selection; after an undo CSP may widen it to the whole canvas."""
+        area, doc = (c_uint64 * 2)(), self._sp()
+        _select_area(ctypes.addressof(area), ctypes.addressof(doc))
+        try:
+            if not c_int32.from_address(area[0] + 0x28).value:  # state: 0 = nothing selected
+                return None
+            return tuple((c_int32 * 4).from_address(area[0] + 0x18))
+        finally:
+            _sp_release(ctypes.addressof(area))
+
+    def crop(self):
+        """Edit > Crop: crop the canvas to the selection."""
+        self._run("Edit/Crop")
+
+    _ROTATE = {90: "Rotate by 90 Degrees Clockwise", 180: "Rotate 180", -90: "Rotate by 90 Degrees Counterclockwise",
+               270: "Rotate by 90 Degrees Counterclockwise"}
+
+    def rotate(self, degrees):
+        """Rotate the canvas clockwise by 90, 180 or -90 (= 270)."""
+        if degrees not in self._ROTATE:
+            raise CspError(f"rotate() takes one of {list(self._ROTATE)}, not {degrees!r}")
+        self._run("Edit/Rotate/Flip canvas/" + self._ROTATE[degrees])
+
+    def flip(self, direction="horizontal"):
+        """Flip the whole canvas: "horizontal" or "vertical"."""
+        self._run("Edit/Rotate/Flip canvas/" + _flip_name(direction))
+
+    def copy(self):
+        """Edit > Copy (the selection on the current layer)."""
+        self._run("Edit/Copy")
+
+    def cut(self):
+        self._run("Edit/Cut")
+
+    def paste(self):
+        """Edit > Paste: the clipboard as a new layer. Returns it."""
+        return self._run("Edit/Paste")
 
     def invert_selection(self):
         self._run("Select/Invert selected area")
@@ -508,6 +581,64 @@ def _export_hooks():
     return hooks
 
 
+_IAT_OPEN = 0x1431E4218  # GetOpenFileNameW import slot; its only caller 1413320e0 is CSP's Open-file dialog
+_OPEN_T = ctypes.WINFUNCTYPE(c_int32, c_void_p)  # BOOL GetOpenFileNameW(OPENFILENAMEW*)
+
+
+def _open_hooks():
+    """Swap the GetOpenFileNameW import once per CSP run: while hooks["path"] is set, the next Open dialog
+    returns that file instead of showing."""
+    import menu  # owns _keep / _write_code; holding the hook there survives reloading csp
+    hooks = getattr(menu, "_csp_open", None)
+    if hooks is not None:
+        return hooks
+    hooks = {"path": None}
+    real = _OPEN_T(_u64(_va(_IAT_OPEN)))
+
+    def on_open(ofn):  # OPENFILENAMEW: +0x30 lpstrFile, +0x38 nMaxFile, +0x64 nFileOffset, +0x66 nFileExtension
+        try:
+            path, hooks["path"] = hooks["path"], None  # answer one dialog only
+            raw = (path or "").encode("utf-16-le") + b"\0" * 4  # double NUL ends a multi-select list too
+            if path and len(raw) // 2 <= c_uint32.from_address(ofn + 0x38).value:
+                ctypes.memmove(_u64(ofn + 0x30), raw, len(raw))
+                ctypes.c_uint16.from_address(ofn + 0x64).value = len(path) - len(os.path.basename(path))
+                ext = os.path.splitext(path)[1]
+                ctypes.c_uint16.from_address(ofn + 0x66).value = len(path) - len(ext) + 1 if ext else 0
+                return 1
+        except BaseException:  # never unwind into CSP: show the real dialog instead
+            pass
+        return real(ofn)
+
+    cb = _OPEN_T(on_open)
+    menu._keep.append(cb)
+    menu._write_code(_va(_IAT_OPEN), ctypes.cast(cb, c_void_p).value.to_bytes(8, "little"))
+    menu._csp_open = hooks
+    return hooks
+
+
+def _run_with_file(command, path):
+    """Run a menu command whose Open dialog picks `path`."""
+    path = os.path.abspath(path)
+    if not os.path.isfile(path):
+        raise CspError(f"no file {path!r}")
+    hooks = _open_hooks()
+    hooks["path"] = path
+    try:
+        run(command)
+    finally:
+        hooks["path"] = None
+
+
+def open_document(path):
+    """File > Open `path` (.clip, .psd, .png, ...) without the dialog. Returns its Document, now active
+    (the existing one if it was already open)."""
+    _app()
+    before = set(documents())
+    _run_with_file("File/Open", path)
+    new = [d for d in documents() if d not in before]
+    return new[0] if new else active_document()
+
+
 def _call_virtual(obj, offset):
     ctypes.CFUNCTYPE(None, c_void_p)(_u64(_u64(obj) + offset))(obj)
 
@@ -523,6 +654,9 @@ _fill_rect = _fn(0x1426609F0, c_int32, c_void_p, c_void_p, c_void_p, c_int32)  #
 _push = _fn(0x141374A40, None, c_void_p, c_void_p)  # (executor, sp<cmd> by value): run + record
 _selection_changed = _fn(0x140486EF0, None, c_void_p)  # (sp<Doc>): UI refresh after a selection change
 _selection_changed2 = _fn(0x140486E40, None, c_void_p)
+# "don't show this again" warning settings, by name (1404a83b0: the empty Selection-from-Layer warning)
+_pref_get = _fn(0x141382720, c_int32, c_void_p)  # (PWString* name) -> show
+_pref_set = _fn(0x141382860, None, c_void_p, c_int32)  # (name, show)
 
 
 # --- PWString: +0 vtable, +8 heap wchar* (0 = inline at +0x20), +0x10 shared ctrl, +0x18 len, +0x1C cap, size 0x30
@@ -779,6 +913,35 @@ class Layer:
         """Layer > Merge with layer below. Returns the merged layer."""
         return self._run("Layer/Merge with layer below")
 
+    @property
+    def bounds(self):
+        """(left, top, right, bottom) around this layer's pixels (right/bottom exclusive), None if empty.
+        Uses Layer > Selection from Layer and undoes it again, so the selection is left as it was."""
+        doc = self.document
+        steps = len(doc.history)
+        doc.active_layer = self
+        if not enabled("Layer/Selection from Layer/Create Selection"):  # e.g. a folder
+            return None
+        key = _pws_new("canvasmodelselectareanotcreatedwarning")  # the empty-layer warning's "show" setting
+        try:
+            show = _pref_get(key)
+            _pref_set(key, 0)
+            try:
+                doc._run("Layer/Selection from Layer/Create Selection")
+            finally:
+                _pref_set(key, show)
+        finally:
+            _pws_free(ctypes.addressof(key))
+        try:
+            return doc._selection_bounds()
+        finally:
+            doc.undo(len(doc.history) - steps)
+
+    def flip(self, direction="horizontal"):
+        """Mirror this layer within its own bounds: "horizontal" or "vertical" (one undo step)."""
+        self._run("Edit/Transform/" + _flip_name(direction))
+        self.document._run("Edit/Transform/OK")
+
     _ORDER = {"top": "Top", "up": "Up", "down": "Down", "bottom": "Bottom"}
 
     def move(self, where):
@@ -798,6 +961,12 @@ class Layer:
             return f"<Layer {self.name!r} @ {self.ptr:#x}>"
         except CspError:
             return f"<Layer (deleted) @ {self.ptr:#x}>"
+
+
+def _flip_name(direction):
+    if direction not in ("horizontal", "vertical"):
+        raise CspError(f'flip() takes "horizontal" or "vertical", not {direction!r}')
+    return "Flip " + direction.capitalize()
 
 
 def current_layer():

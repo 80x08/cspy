@@ -51,6 +51,14 @@ img = doc.image()                     # the canvas as you see it; layer.image():
 img.width, img.height, img.pixel(10, 20), img.data, img.save(r"C:\out\x.png")   # RGBA bytes, rows from the top
 doc.find("ink"), doc.walk()           # first layer by name; every layer, depth first
 doc.flatten(), doc.merge_visible(), doc.save(), doc.select_all(), doc.deselect(), doc.invert_selection()
+doc = csp.open_document(r"C:\in\page.psd")   # no dialog; returns the (now active) canvas
+doc.save_as(r"C:\out\page.clip")      # no dialog, .clip only (other formats: export)
+doc.close()                           # refuses unsaved changes: save first
+layer = doc.place(r"C:\in\photo.png")  # File > Import > Image as a new layer
+layer.bounds                          # (left, top, right, bottom) of its pixels, None if empty
+layer.flip("horizontal")              # in place; doc.flip("vertical"), doc.rotate(90 / 180 / -90): whole canvas
+doc.crop()                            # canvas to the selection
+doc.copy(), doc.cut(), doc.paste()    # paste returns the new layer
 csp.run("Layer/Duplicate Layer")      # any main-menu command, like clicking it (dialogs wait until closed)
 csp.enabled("Edit/Undo")              # greyed out or not
 csp.commands()                        # {"Edit/Undo": (command id, param), ...}
