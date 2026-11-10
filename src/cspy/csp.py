@@ -389,6 +389,19 @@ class Document:
         finally:
             _sp_release(ctypes.addressof(area))
 
+    def resize_canvas(self, width, height, x=None, y=None):
+        """Edit > Change Canvas Size without the dialog: the new canvas is width x height pixels with its
+        top-left at (x, y) of the current one (default: centered; negative values grow the canvas)."""
+        # 140453120 (the menu handler) shows the dialog, then calls 1404e5b20(sp<Doc>, double[4] ltrb, unit, 1, PWString* label)
+        x = (self.width - width) // 2 if x is None else x
+        y = (self.height - height) // 2 if y is None else y
+        unit = c_int32.from_address(self._canvas() + 0xD0).value  # width's unit (after the double at +0xC8)
+        box, doc, label = (c_double * 4)(x, y, x + width, y + height), self._sp(), _pws_new("Change canvas size")
+        try:
+            _change_canvas(ctypes.addressof(doc), box, unit, 1, ctypes.addressof(label))
+        finally:
+            _pws_free(ctypes.addressof(label))
+
     def crop(self):
         """Edit > Crop: crop the canvas to the selection."""
         self._run("Edit/Crop")
@@ -759,6 +772,7 @@ _fill_rect = _fn(0x1426609F0, c_int32, c_void_p, c_void_p, c_void_p, c_int32)  #
 _push = _fn(0x141374A40, None, c_void_p, c_void_p)  # (executor, sp<cmd> by value): run + record
 _selection_changed = _fn(0x140486EF0, None, c_void_p)  # (sp<Doc>): UI refresh after a selection change
 _selection_changed2 = _fn(0x140486E40, None, c_void_p)
+_change_canvas = _fn(0x1404E5B20, None, c_void_p, c_void_p, c_int32, c_int32, c_void_p)
 # "don't show this again" warning settings, by name (1404a83b0: the empty Selection-from-Layer warning)
 _pref_get = _fn(0x141382720, c_int32, c_void_p)  # (PWString* name) -> show
 _pref_set = _fn(0x141382860, None, c_void_p, c_int32)  # (name, show)

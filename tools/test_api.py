@@ -255,6 +255,12 @@ w, h = doc.width, doc.height
 doc.rotate(180)
 doc.flip("vertical")
 assert (doc.width, doc.height) == (w, h) and b.bounds == (w - 130, 40, w - 30, 90), b.bounds
+hc = len(doc.history)
+doc.resize_canvas(w + 200, h + 100)  # centered: old (0, 0) lands at (100, 50)
+assert (doc.width, doc.height) == (w + 200, h + 100) and doc.history[hc:] == ["Change canvas size"]
+assert b.bounds == (w - 30, 90, w + 70, 140), b.bounds
+doc.resize_canvas(w, h, x=100, y=50)  # back to the old area
+assert (doc.width, doc.height) == (w, h) and b.bounds == (w - 130, 40, w - 30, 90), b.bounds
 doc.select_rect(0, 0, w // 2, h // 2)
 doc.crop()
 assert (doc.width, doc.height) == (w // 2, h // 2)
