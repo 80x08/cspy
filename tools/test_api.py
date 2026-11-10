@@ -177,6 +177,11 @@ try:
     shrunk = doc.new_raster_layer("cspy shrunk")
     doc.fill()
     assert shrunk.bounds == (120, 120, 180, 130), shrunk.bounds
+    doc.select_all()
+    doc.shrink_selection(24, from_edges=True)
+    edged = doc.new_raster_layer("cspy edged")
+    doc.fill()
+    assert edged.bounds == (24, 24, doc.width - 24, doc.height - 24), edged.bounds
     doc.deselect()
     try:
         doc.expand_selection(5)

@@ -406,9 +406,10 @@ class Document:
         its first choice). One undo step."""
         self._grow_selection(_expand_selection, "Expand selection", pixels, kind)
 
-    def shrink_selection(self, pixels, kind=0):
-        """Select > Shrink selected area by `pixels` without the dialog. One undo step."""
-        self._grow_selection(_shrink_selection, "Shrink selection", pixels, kind, 0)
+    def shrink_selection(self, pixels, kind=0, from_edges=False):
+        """Select > Shrink selected area by `pixels` without the dialog. from_edges=True also shrinks it away
+        from the canvas edges (without it, Select All stays the whole canvas). One undo step."""
+        self._grow_selection(_shrink_selection, "Shrink selection", pixels, kind, int(bool(from_edges)))
 
     def _grow_selection(self, apply, name, pixels, kind, *extra):
         # the dialogs' handlers (1404840e0, 140486040) end in these with (sp<Doc>, sp<PWSelectArea>) by value
@@ -822,7 +823,7 @@ _push = _fn(0x141374A40, None, c_void_p, c_void_p)  # (executor, sp<cmd> by valu
 _selection_changed = _fn(0x140486EF0, None, c_void_p)  # (sp<Doc>): UI refresh after a selection change
 _selection_changed2 = _fn(0x140486E40, None, c_void_p)
 _expand_selection = _fn(0x140512870, None, c_void_p, c_void_p, c_int32, c_int32, c_void_p)  # (.., px, type, label)
-_shrink_selection = _fn(0x140515830, None, c_void_p, c_void_p, c_int32, c_int32, c_int32, c_void_p)  # +on/off
+_shrink_selection = _fn(0x140515830, None, c_void_p, c_void_p, c_int32, c_int32, c_int32, c_void_p)  # +from edges
 _change_canvas = _fn(0x1404E5B20, None, c_void_p, c_void_p, c_int32, c_int32, c_void_p)
 # (sp<Doc>, {double, unit}* width, height, dpi, scale, [quality,] PWString* label): resample / keep pixels
 _resample = _fn(0x1404E5400, None, c_void_p, c_void_p, c_void_p, c_double, c_double, c_int32, c_void_p)
