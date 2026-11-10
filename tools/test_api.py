@@ -261,6 +261,14 @@ assert (doc.width, doc.height) == (w + 200, h + 100) and doc.history[hc:] == ["C
 assert b.bounds == (w - 30, 90, w + 70, 140), b.bounds
 doc.resize_canvas(w, h, x=100, y=50)  # back to the old area
 assert (doc.width, doc.height) == (w, h) and b.bounds == (w - 130, 40, w - 30, 90), b.bounds
+dpi = doc.resolution
+doc.resolution = dpi * 2  # keeps the pixels
+assert (doc.width, doc.height, doc.resolution) == (w, h, dpi * 2) and b.bounds == (w - 130, 40, w - 30, 90)
+doc.resize_image(w // 2, h // 2, resolution=dpi)
+assert (doc.width, doc.height, doc.resolution) == (w // 2, h // 2, dpi), (doc.width, doc.height)
+assert b.bounds == ((w - 130) // 2, 20, (w - 30) // 2, 45), b.bounds
+doc.undo(2)
+assert (doc.width, doc.height, doc.resolution) == (w, h, dpi)
 doc.select_rect(0, 0, w // 2, h // 2)
 doc.crop()
 assert (doc.width, doc.height) == (w // 2, h // 2)

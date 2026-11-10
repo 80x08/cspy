@@ -185,8 +185,32 @@ class Document:
 
     @property
     def resolution(self):
-        """Dots per inch."""
+        """Dots per inch. Setting it keeps the pixels (Change Image Resolution with "fix pixel count")."""
         return c_double.from_address(self._canvas() + 0xE8).value
+
+    @resolution.setter
+    def resolution(self, dpi):
+        self._change_resolution(self.width, self.height, dpi, None)
+
+    def resize_image(self, width, height, resolution=None, quality=4):
+        """Edit > Change Image Resolution without the dialog: resample the canvas to width x height pixels
+        (resolution: new dpi, default unchanged; quality: CSP's interpolation setting, 4 its default)."""
+        self._change_resolution(width, height, resolution or self.resolution, quality)
+
+    def _change_resolution(self, width, height, dpi, quality):
+        # 140458ca0 (the menu handler) shows the dialog, then calls one of these with {double, int unit} sizes
+        if not (isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0 and dpi > 0):
+            raise CspError(f"bad size / resolution {(width, height, dpi)!r}")
+        w, h = (c_double * 2)(width, 0), (c_double * 2)(height, 0)  # unit 0 = pixels (the 2nd double's low int)
+        doc, label = self._sp(), _pws_new("Change image resolution")
+        try:
+            if quality is None:
+                _set_resolution(ctypes.addressof(doc), w, h, float(dpi), 1.0, ctypes.addressof(label))
+            else:
+                _resample(ctypes.addressof(doc), w, h, float(dpi), width / self.width, quality,
+                          ctypes.addressof(label))
+        finally:
+            _pws_free(ctypes.addressof(label))
 
     def _tab(self):
         # shortcut: tabs are matched to documents by position (both in tab order); find a direct link if
@@ -773,6 +797,9 @@ _push = _fn(0x141374A40, None, c_void_p, c_void_p)  # (executor, sp<cmd> by valu
 _selection_changed = _fn(0x140486EF0, None, c_void_p)  # (sp<Doc>): UI refresh after a selection change
 _selection_changed2 = _fn(0x140486E40, None, c_void_p)
 _change_canvas = _fn(0x1404E5B20, None, c_void_p, c_void_p, c_int32, c_int32, c_void_p)
+# (sp<Doc>, {double, unit}* width, height, dpi, scale, [quality,] PWString* label): resample / keep pixels
+_resample = _fn(0x1404E5400, None, c_void_p, c_void_p, c_void_p, c_double, c_double, c_int32, c_void_p)
+_set_resolution = _fn(0x1404E57D0, None, c_void_p, c_void_p, c_void_p, c_double, c_double, c_void_p)
 # "don't show this again" warning settings, by name (1404a83b0: the empty Selection-from-Layer warning)
 _pref_get = _fn(0x141382720, c_int32, c_void_p)  # (PWString* name) -> show
 _pref_set = _fn(0x141382860, None, c_void_p, c_int32)  # (name, show)

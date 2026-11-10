@@ -62,6 +62,8 @@ layer.resize(0.5), layer.resize(2, 1) # scale around the center of its bounds (s
 layer.flip("horizontal")              # in place; doc.flip("vertical"), doc.rotate(90 / 180 / -90): whole canvas
 doc.crop()                            # canvas to the selection
 doc.resize_canvas(2000, 1500)         # Change Canvas Size, no dialog; centered, or x=, y= of the new top-left
+doc.resize_image(800, 600, resolution=150)  # Change Image Resolution (resample), no dialog
+doc.resolution = 350                  # dpi only, pixels unchanged
 doc.copy(), doc.cut(), doc.paste()    # paste returns the new layer
 csp.run("Layer/Duplicate Layer")      # any main-menu command, like clicking it (dialogs wait until closed)
 csp.enabled("Edit/Undo")              # greyed out or not
