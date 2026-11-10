@@ -289,7 +289,12 @@ copy.close()
 assert copy not in csp.documents()
 reopened = csp.open_document(clip)
 assert [l.name for l in reopened.layers][0] == "canvas"
-reopened.close()
+reopened.new_raster_layer("cspy unsaved")
+reopened.close(discard=True)  # answers "save changes?" with Don't save
+assert reopened not in csp.documents()
+again = csp.open_document(clip)
+assert again.find("cspy unsaved") is None, "discarded changes were saved"
+again.close()
 for bad in (lambda: csp.open_document(os.path.join(folder, "missing.png")), lambda: doc.save_as(png)):
     try:
         bad()

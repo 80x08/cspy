@@ -263,14 +263,21 @@ class Document:
         if not os.path.exists(path) or os.stat(path).st_mtime_ns == before:
             raise CspError(f"CSP did not write {path!r}")
 
-    def close(self):
-        """File > Close. Refuses a canvas with unsaved changes (CSP would ask): save() / save_as() first."""
-        # shortcut: no close-without-saving yet; needs the Save-changes prompt (a CSP dialog) answered.
-        if self.modified:
-            raise CspError(f"{self.name!r} has unsaved changes")
+    def close(self, discard=False):
+        """File > Close. A canvas with unsaved changes raises CspError unless discard=True, which answers
+        CSP's "save changes?" prompt with Don't save."""
+        if self.modified and not discard:
+            raise CspError(f"{self.name!r} has unsaved changes (save() first, or close(discard=True))")
         if active_document() != self:
             raise CspError(f"{self!r} is not the active canvas")
-        run("File/Close")  # not _run: there's no active layer to return afterwards
+        hooks = _message_hooks()
+        hooks["answer"] = {5: _DONT_SAVE, 6: _DONT_SAVE}  # the Save / Don't save / Cancel button sets
+        try:
+            run("File/Close")  # not _run: there's no active layer to return afterwards
+        finally:
+            hooks["answer"] = None
+        if self.ptr in [ptr for ptr, _ in mem.sp_vector(_app() + 0x300)]:
+            raise CspError(f"CSP did not close {self!r}")
 
     def place(self, path):
         """File > Import > Image: `path` as a new layer above the current one. Returns that layer."""
@@ -637,6 +644,36 @@ def open_document(path):
     _run_with_file("File/Open", path)
     new = [d for d in documents() if d not in before]
     return new[0] if new else active_document()
+
+
+# --- CSP's message box 141207270(PWString* text, title, buttons, icon, default) -> 1 OK, 2 Cancel, 3 Yes / Save,
+# 4 No / Don't save (| 0x100 when "don't show again" is ticked). buttons 5 and 6 = Save / Don't save / Cancel.
+_MESSAGE_BOX = 0x141207270
+_MESSAGE_T = ctypes.CFUNCTYPE(c_uint32, c_void_p, c_void_p, c_int32, c_int32, c_int32)
+_DONT_SAVE = 4
+
+
+def _message_hooks():
+    """Detour the message box once per CSP run: while hooks["answer"] = {buttons: result}, a box with those
+    buttons returns that result without showing."""
+    import menu
+    hooks = getattr(menu, "_csp_message", None)
+    if hooks is not None:
+        return hooks
+    hooks = {"answer": None}
+
+    def on_box(text, title, buttons, icon, default):
+        try:
+            result = (hooks["answer"] or {}).get(buttons)
+            if result:
+                return result
+        except BaseException:  # never unwind into CSP: show the box instead
+            pass
+        return box(text, title, buttons, icon, default)
+
+    box = menu._detour(_MESSAGE_BOX, "48895c2420 55 56 57 4154 4155 4156 4157", _MESSAGE_T, on_box)[0]
+    menu._csp_message = hooks
+    return hooks
 
 
 # --- transform mode: PWResizableImageInfo (+0x10 kind, +0x28 vector of corner points {double x, y},

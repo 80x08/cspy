@@ -53,7 +53,7 @@ doc.find("ink"), doc.walk()           # first layer by name; every layer, depth 
 doc.flatten(), doc.merge_visible(), doc.save(), doc.select_all(), doc.deselect(), doc.invert_selection()
 doc = csp.open_document(r"C:\in\page.psd")   # no dialog; returns the (now active) canvas
 doc.save_as(r"C:\out\page.clip")      # no dialog, .clip only (other formats: export)
-doc.close()                           # refuses unsaved changes: save first
+doc.close()                           # refuses unsaved changes: save first, or close(discard=True)
 layer = doc.place(r"C:\in\photo.png")  # File > Import > Image as a new layer
 layer.bounds                          # (left, top, right, bottom) of its pixels, None if empty
 layer.translate(200, -50)             # move its pixels (one undo step; raster layers)
