@@ -486,8 +486,8 @@ class Image:
         i = (y * self.width + x) * 4
         return tuple(self.data[i:i + 4])
 
-    def save(self, path):
-        """Write a PNG."""
+    def save(self, path, dpi=None):
+        """Write a PNG (with `dpi` recorded as its resolution if given)."""
         stride = self.width * 4
         rows = b"".join(b"\0" + self.data[y * stride:(y + 1) * stride] for y in range(self.height))
 
@@ -496,6 +496,7 @@ class Image:
 
         with open(path, "wb") as f:
             f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", self.width, self.height, 8, 6, 0, 0, 0))
+                    + (chunk(b"pHYs", struct.pack(">IIB", *[round(dpi / 0.0254)] * 2, 1)) if dpi else b"")
                     + chunk(b"IDAT", zlib.compress(rows, 6)) + chunk(b"IEND", b""))
 
     def __repr__(self):
@@ -644,6 +645,26 @@ def open_document(path):
     _run_with_file("File/Open", path)
     new = [d for d in documents() if d not in before]
     return new[0] if new else active_document()
+
+
+def new_document(width, height, dpi=72, color=(255, 255, 255, 255), name="Untitled"):
+    """A new canvas filled with `color` (r, g, b, a; a=0 for transparent), one layer, now active. Made by
+    opening a generated PNG, so no File > New dialog; the tab reads "<name>.png" until save_as(".clip")."""
+    # shortcut: a PNG-backed canvas (File > Save writes a PNG to a deleted temp folder); drive File > New's
+    # dialog if a real "new canvas" (paper layer, page settings) is needed.
+    if not (isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0):
+        raise CspError(f"size must be positive ints, not {(width, height)!r}")
+    if len(color) != 4 or not all(isinstance(v, int) and 0 <= v <= 255 for v in color):
+        raise CspError(f"color must be (r, g, b, a) ints 0..255, not {color!r}")
+    with tempfile.TemporaryDirectory(prefix="cspy-") as folder:
+        path = os.path.join(folder, name + ".png")
+        Image(width, height, bytes(color) * (width * height)).save(path, dpi)
+        before = set(documents())
+        _run_with_file("File/Open", path)
+    new = [d for d in documents() if d not in before]
+    if not new:
+        raise CspError("CSP did not open the new canvas")
+    return new[0]
 
 
 # --- CSP's message box 141207270(PWString* text, title, buttons, icon, default) -> 1 OK, 2 Cancel, 3 Yes / Save,

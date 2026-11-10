@@ -52,6 +52,7 @@ img.width, img.height, img.pixel(10, 20), img.data, img.save(r"C:\out\x.png")   
 doc.find("ink"), doc.walk()           # first layer by name; every layer, depth first
 doc.flatten(), doc.merge_visible(), doc.save(), doc.select_all(), doc.deselect(), doc.invert_selection()
 doc = csp.open_document(r"C:\in\page.psd")   # no dialog; returns the (now active) canvas
+doc = csp.new_document(1200, 900, dpi=350, color=(255, 255, 255, 255), name="page")  # tab "page.png": save_as .clip
 doc.save_as(r"C:\out\page.clip")      # no dialog, .clip only (other formats: export)
 doc.close()                           # refuses unsaved changes: save first, or close(discard=True)
 layer = doc.place(r"C:\in\photo.png")  # File > Import > Image as a new layer

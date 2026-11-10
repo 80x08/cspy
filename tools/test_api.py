@@ -305,6 +305,17 @@ for bad in (lambda: csp.open_document(os.path.join(folder, "missing.png")), lamb
 for f in (clip, png):
     os.remove(f)
 os.rmdir(folder)
+fresh = csp.new_document(320, 240, dpi=350, color=(0, 128, 255, 255), name="cspy fresh")
+assert (fresh.width, fresh.height, fresh.resolution, fresh.name) == (320, 240, 350.0, "cspy fresh.png")
+assert fresh.image().pixel(5, 5) == (0, 128, 255, 255) and not fresh.modified
+fresh.close()
+for bad in (lambda: csp.new_document(0, 10), lambda: csp.new_document(10, 10, color=(1, 2, 3))):
+    try:
+        bad()
+    except CspError:
+        pass
+    else:
+        raise AssertionError("bad new_document accepted")
 doc.active_layer = start  # back on the original canvas
 assert csp.active_document() == doc
 
